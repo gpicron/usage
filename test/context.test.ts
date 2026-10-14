@@ -7,7 +7,10 @@ import {
   embeddedTokens,
   estimateTextTokens,
   formatBreakdown,
+  formatToolTax,
+  mcpServerOf,
   resolveUsedTokens,
+  toolTax,
 } from "../src/context.ts";
 
 const AGENTS_MD = "Always run bun test before committing. ".repeat(20);
@@ -25,6 +28,28 @@ function input(overrides: Partial<Parameters<typeof buildBreakdown>[0]> = {}) {
     ...overrides,
   });
 }
+
+test("toolTax ranks tools by schema tokens and labels MCP tools by server", () => {
+  const tools = [
+    { name: "read", description: "Read a file", parameters: { type: "object", properties: { path: { type: "string" } } } },
+    { name: "mcp__docs__search", description: "x".repeat(4000), parameters: { type: "object", properties: {} } },
+    { name: "mcp__docs__fetch", description: "short", parameters: {} },
+    { name: "edit", description: "y".repeat(800), parameters: {} },
+  ];
+  const ranked = toolTax(tools);
+  assert.equal(ranked[0]!.name, "mcp__docs__search", "the fattest schema is first");
+  assert.equal(ranked[0]!.source, "mcp:docs");
+  assert.equal(toolTax([{ name: "read" }])[0]!.source, "builtin/ext");
+  assert.equal(mcpServerOf("mcp__radius__list"), "radius");
+  assert.equal(mcpServerOf("read"), null);
+
+  const lines = formatToolTax(tools, 2);
+  assert.match(lines[0]!, /^Heaviest tool schemas \(4 tools, ~[\d.]+k? of the prefix\):$/);
+  assert.match(lines[1]!, /mcp__docs__search.*mcp:docs/);
+  assert.ok(lines.some((l) => /… and 2 more/.test(l)), "the tail is summarised");
+  assert.ok(lines.some((l) => /by source: /.test(l)), "a by-source subtotal");
+  assert.deepEqual(formatToolTax([]), []);
+});
 
 test("thinking blocks get their own row, not folded into conversation", () => {
   const entries = [

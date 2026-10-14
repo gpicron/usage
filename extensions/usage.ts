@@ -29,7 +29,7 @@ import { join } from "node:path";
 import { readFileSync } from "node:fs";
 
 import { addRecord, aggregate, recordFromEntry, windowTotals } from "../src/aggregate.ts";
-import { buildBreakdown, contextTokensFromUsage, formatBreakdown, resolveUsedTokens } from "../src/context.ts";
+import { buildBreakdown, contextTokensFromUsage, formatBreakdown, formatToolTax, resolveUsedTokens } from "../src/context.ts";
 import { contextGauge, footerText, formatCost, formatTokens, historyBlock, sessionBlock } from "../src/format.ts";
 import { childSpendTotal, onChildSpend, resetChildSpend } from "../src/child-cost.ts";
 import { buildByDayCsv, buildByModelCsv, buildByProjectCsv, buildTotalsJson } from "../src/export.ts";
@@ -281,7 +281,8 @@ export default function usage(pi: ExtensionAPI) {
     const systemPrompt = host.getSystemPrompt?.() ?? "";
     const options = host.getSystemPromptOptions?.() ?? {};
     const selected = new Set(options.selectedTools ?? []);
-    const allTools = (pi as unknown as { getAllTools?: () => Array<{ name?: string }> }).getAllTools?.() ?? [];
+    const allTools =
+      (pi as unknown as { getAllTools?: () => Array<{ name?: string; description?: string; parameters?: unknown }> }).getAllTools?.() ?? [];
     const tools = selected.size > 0 ? allTools.filter((t) => selected.has(t.name ?? "")) : allTools;
 
     let skillsText = "";
@@ -316,7 +317,10 @@ export default function usage(pi: ExtensionAPI) {
       providerTokens: lastPromptTokens || null,
       estimate: breakdown.attributed,
     });
-    return formatBreakdown(breakdown, reported);
+    // Break the "Tool definitions" row into its heaviest tools, biggest first,
+    // so a costly MCP server or a fat schema is nameable rather than a lump.
+    const taxLines = formatToolTax(tools);
+    return taxLines.length > 0 ? `${formatBreakdown(breakdown, reported)}\n\n${taxLines.join("\n")}` : formatBreakdown(breakdown, reported);
   }
 
   pi.registerCommand("usage", {

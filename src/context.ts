@@ -170,6 +170,62 @@ function foldEntries(entries: unknown[]): { conversation: number; toolResults: n
   return { conversation, toolResults, thinking };
 }
 
+/** One tool's share of the schema tax: its estimated token cost and where it came from. */
+export interface ToolTax {
+  name: string;
+  tokens: number;
+  /** "builtin/ext", or "mcp:<server>" for an MCP tool. */
+  source: string;
+}
+
+/** The server an MCP tool belongs to (mcp__<server>__<tool>), or null. */
+export function mcpServerOf(name: string): string | null {
+  const m = /^mcp__(.+?)__/.exec(name);
+  return m ? m[1]! : null;
+}
+
+/**
+ * Every active tool ranked by the tokens its schema (name + description +
+ * parameters) adds to the prefix of every request. The "Tool definitions" row
+ * in the breakdown is this sum; this says which tools make it up, biggest
+ * first — the live, per-session answer to what @pify-adjacent "subagent-tax"
+ * measures across harnesses. Same chars/4 estimate as everything else here.
+ */
+export function toolTax(tools: BreakdownInput["tools"]): ToolTax[] {
+  return tools
+    .map((tool) => {
+      const name = String(tool.name ?? "");
+      const server = mcpServerOf(name);
+      return {
+        name,
+        tokens: estimateTextTokens({ name, description: tool.description, parameters: tool.parameters }),
+        source: server ? `mcp:${server}` : "builtin/ext",
+      };
+    })
+    .sort((a, b) => b.tokens - a.tokens || a.name.localeCompare(b.name));
+}
+
+/** A compact "heaviest tool schemas" block: the top `max`, then a by-source subtotal. */
+export function formatToolTax(tools: BreakdownInput["tools"], max = 8): string[] {
+  const ranked = toolTax(tools);
+  if (ranked.length === 0) return [];
+  const total = ranked.reduce((sum, t) => sum + t.tokens, 0);
+  const width = Math.min(ranked.length, max) > 0 ? ranked.slice(0, max).reduce((m, t) => Math.max(m, t.name.length), 0) : 0;
+  const lines = [`Heaviest tool schemas (${ranked.length} ${ranked.length === 1 ? "tool" : "tools"}, ~${formatTokens(total)} of the prefix):`];
+  for (const t of ranked.slice(0, max)) {
+    lines.push(`  ${t.name.padEnd(width)}  ${formatTokens(t.tokens).padStart(6)}  ${t.source === "builtin/ext" ? "" : t.source}`.trimEnd());
+  }
+  if (ranked.length > max) {
+    const rest = ranked.slice(max).reduce((sum, t) => sum + t.tokens, 0);
+    lines.push(`  … and ${ranked.length - max} more, ~${formatTokens(rest)}`);
+  }
+  const bySource = new Map<string, number>();
+  for (const t of ranked) bySource.set(t.source, (bySource.get(t.source) ?? 0) + t.tokens);
+  const subtotals = [...bySource.entries()].sort((a, b) => b[1] - a[1]).map(([s, n]) => `${s} ~${formatTokens(n)}`);
+  if (subtotals.length > 1) lines.push(`  by source: ${subtotals.join(", ")}`);
+  return lines;
+}
+
 export function buildBreakdown(input: BreakdownInput): ContextBreakdown {
   const memory = input.contextFiles.reduce(
     (sum, file) => sum + embeddedTokens(input.systemPrompt, file.content ?? ""),

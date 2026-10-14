@@ -64,9 +64,19 @@ Context window: 22.6k of 200.0k used (11%)
   Tool results      ██··························   8%  16.8k
   Conversation      ····························   1%  2.4k
   Free space        █████████████████████████···  89%  177.4k
+
+Heaviest tool schemas (14 tools, ~3.9k of the prefix):
+  mcp__docs__search     1.6k  mcp:docs
+  workflow              520
+  mcp__docs__fetch      410   mcp:docs
+  bash                  290
+  … and 10 more, ~1.1k
+  by source: mcp:docs ~2.0k, builtin/ext ~1.9k
 ```
 
 "Why am I at 60%?" usually has a boring answer — one `read` of a 4,000-line file — and this is where you find it.
+
+The **Tool definitions** row is broken out below the window into its heaviest tools, biggest first, so a fat MCP schema or a costly server is nameable rather than a lump: every active tool's `name + description + parameters` is a prefix cost paid on *every* request, and the `by source` line totals the builtins and extensions against each MCP server. (This is the live, per-session version of what the cross-harness "subagent-tax" measures.)
 
 Computed entirely from what pi already holds: the assembled system prompt, the files and skills embedded in it, the enabled tool definitions, and the entries that would be sent. No network, no model call.
 
