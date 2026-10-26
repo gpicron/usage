@@ -28,7 +28,7 @@ test("quota command integrates Pi OAuth, provider-specific footer and coexisting
         globalThis.fetch = async (url, init) => {
           requests.push({ url, headers: new Headers(init.headers) });
           assert.equal(init.redirect, "error");
-          if (url === "https://api.github.com/copilot_internal/user") {
+          if (url === "https://api.github.com/copilot_internal/user" || url === "https://api.example.ghe.com/copilot_internal/user") {
             assert.equal(new Headers(init.headers).get("Authorization"), "Bearer synthetic-github");
             return new Response(JSON.stringify({ quota_snapshots: { premium_interactions: { percent_remaining: 49 } }, quota_reset_date: new Date(Date.now() + 3600000).toISOString() }));
           }
@@ -62,6 +62,7 @@ test("quota command integrates Pi OAuth, provider-specific footer and coexisting
           modelRegistry: { getApiKeyForProvider: async id => {
             authCalls.push(id);
             assert.notEqual(id, "github-copilot", "never resolve an inference token for quota");
+            if (id === "openrouter") return "synthetic-unused-openrouter-key";
             if (id !== "openai-codex") return undefined;
             credentials["openai-codex"].access = token;
             persistAuth();
@@ -75,16 +76,21 @@ test("quota command integrates Pi OAuth, provider-specific footer and coexisting
         assert.equal(requests.length, 0);
         assert.equal(authCalls.length, 0);
         await commands.get("pify-usage").handler("quota", ctx);
-        assert.equal(requests.length, 2);
+        assert.equal(requests.length, 1, "only the active provider may be queried");
+        assert.equal(authCalls.length, 0, "do not resolve unrelated credentials");
+        assert.ok(!notifications.join("\\n").includes("OpenRouter"));
         assert.match(statuses.get("pify-usage"), /Copilot.*49% left.*cached/);
         assert.equal(statuses.get("usage"), "legacy footer");
         ctx.model.provider = "openai-codex";
         await handlers.get("model_select")({}, ctx);
-        assert.match(statuses.get("pify-usage"), /Codex.*75% left.*40% left/);
+        assert.equal(statuses.get("pify-usage"), undefined);
+        assert.equal(requests.length, 1);
+        await commands.get("pify-usage").handler("quota", ctx);
         assert.equal(requests.length, 2);
+        assert.match(statuses.get("pify-usage"), /Codex.*75% left.*40% left/);
         rejectCodex = true;
         await commands.get("pify-usage").handler("quota", ctx);
-        assert.equal(requests.length, 4);
+        assert.equal(requests.length, 3);
         assert.match(statuses.get("pify-usage"), /Codex quota unavailable/);
         assert.ok(!notifications.join("\\n").includes(token));
         assert.ok(!notifications.join("\\n").includes("synthetic-github"));
@@ -92,14 +98,27 @@ test("quota command integrates Pi OAuth, provider-specific footer and coexisting
         assert.equal(statuses.get("pify-usage"), undefined);
         await handlers.get("session_shutdown")({}, ctx);
         assert.equal(statuses.get("usage"), "legacy footer");
-        assert.equal(requests.length, 4);
+        assert.equal(requests.length, 3);
         credentials["github-copilot"].enterpriseUrl = "example.ghe.com";
         delete credentials["openai-codex"];
         persistAuth();
         ctx.model.provider = "github-copilot";
         await commands.get("pify-usage").handler("quota", ctx);
-        assert.equal(requests.length, 4, "an Enterprise-only login must make zero quota requests");
-        assert.equal(statuses.get("pify-usage"), undefined);
+        assert.equal(requests.length, 4);
+        assert.equal(requests.at(-1).url, "https://api.example.ghe.com/copilot_internal/user");
+        assert.match(statuses.get("pify-usage"), /Copilot.*49% left/);
+        credentials["github-copilot"].enterpriseUrl = "example.ghe.com.evil.invalid";
+        persistAuth();
+        await commands.get("pify-usage").handler("quota", ctx);
+        assert.equal(requests.length, 4, "invalid authorities must never fall back to public GitHub");
+        assert.match(statuses.get("pify-usage"), /unavailable/);
+        assert.match(notifications.at(-1), /unsupported.*authority/i);
+        ctx.model.provider = "unsupported-provider";
+        await commands.get("pify-usage").handler("quota", ctx);
+        assert.equal(requests.length, 4);
+        assert.match(notifications.at(-1), /active provider/);
+        assert.equal(statuses.get("pify-usage"), undefined, "never retain another provider's quota in the footer");
+        assert.ok(authCalls.every(id => id === "openai-codex"));
         console.log("extension integration: OK");
       })().catch(error => { console.error(error); process.exitCode = 1; });
     `], { cwd: new URL("..", import.meta.url), env: { ...process.env, PI_CODING_AGENT_DIR: dir }, encoding: "utf8", timeout: 30000 });

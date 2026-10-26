@@ -35,7 +35,7 @@ import { emptyCacheHealth, observeCacheHealth } from "../src/cache-health.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { QUOTA_PROVIDERS, fetchQuota, quotaReport, quotaFooter, type QuotaResult } from "../src/quota.ts";
-import { quotaApiKey } from "../src/quota-auth.ts";
+import { resolveQuotaAuth } from "../src/quota-auth.ts";
 import { redact } from "../src/redact.ts";
 import { scanSessions, persistScanCache, restoreScanCache } from "../src/sessions.ts";
 import { parseRateLimit, formatRateLimit, type RateLimitSnapshot, footerQuotaSegment } from "../src/ratelimit.ts";
@@ -337,39 +337,27 @@ export default function usage(pi: ExtensionAPI) {
         return;
       }
       if ((args ?? "").trim().toLowerCase() === "quota") {
-        // The one networked path in this package, and only when asked for.
-        // Providers with no key are skipped entirely rather than reported as
-        // broken: an unconfigured provider is not a failure.
-        const configured: Array<{ provider: (typeof QUOTA_PROVIDERS)[number]; key: string }> = [];
-        for (const provider of QUOTA_PROVIDERS) {
-          const key = await quotaApiKey(provider.id, ctx.modelRegistry, readStoredCredential);
-          if (key) configured.push({ provider, key });
-          else quotas.delete(provider.id);
-        }
-        updateFooter(ctx);
-        if (configured.length === 0) {
-          const passive = [...rateLimits.values()]
-            .map((s) => formatRateLimit(s))
-            .filter((line): line is string => line !== null);
-          ctx.ui.notify(
-            passive.length > 0 ? redact(`${passive.join("\n")}\n\n${quotaReport([])}`) : quotaReport([]),
-            "info",
-          );
+        // Only the active provider: a configured balance key does not mean it is in use.
+        const id = ctx.model?.provider ?? "";
+        const provider = QUOTA_PROVIDERS.find(p => p.id === id);
+        const snapshot = rateLimits.get(id);
+        const passive = snapshot ? formatRateLimit(snapshot) : null;
+        if (!provider) {
+          updateFooter(ctx);
+          ctx.ui.notify(redact(passive ?? "No quota endpoint is available for the active provider."), "info");
           return;
         }
-        ctx.ui.notify(`Checking quota for ${configured.map((c) => c.provider.displayName).join(", ")}…`, "info");
-        const results: QuotaResult[] = [];
-        for (const { provider, key } of configured) {
-          const result = await fetchQuota(provider, key);
-          results.push(result);
-          quotas.set(provider.id, { result, fetchedAt: Date.now() });
+        const auth = await resolveQuotaAuth(provider, ctx.modelRegistry, readStoredCredential);
+        let result: QuotaResult;
+        if (auth.ok) {
+          ctx.ui.notify(`Checking quota for ${provider.displayName}…`, "info");
+          result = await fetchQuota(auth.provider, auth.apiKey);
+        } else {
+          result = auth;
         }
+        quotas.set(id, { result, fetchedAt: Date.now() });
         updateFooter(ctx);
-        const passive = [...rateLimits.values()]
-          .map((s) => formatRateLimit(s))
-          .filter((line): line is string => line !== null);
-        const passiveBlock = passive.length > 0 ? `${passive.join("\n")}\n\n` : "";
-        ctx.ui.notify(redact(passiveBlock + quotaReport(results)), results.every((r) => r.ok) ? "info" : "warning");
+        ctx.ui.notify(redact((passive ? `${passive}\n\n` : "") + quotaReport([result])), result.ok ? "info" : "warning");
         return;
       }
       ctx.ui.notify(dashboard(ctx), "info");

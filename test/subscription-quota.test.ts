@@ -1,7 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fetchQuota, findProvider, parseCopilotQuota, parseCodexQuota, quotaBlock, quotaFooter } from "../src/quota.ts";
-import { quotaApiKey } from "../src/quota-auth.ts";
+import { resolveQuotaAuth } from "../src/quota-auth.ts";
+
+async function quotaApiKey(id: string, registry: Parameters<typeof resolveQuotaAuth>[1], reader: (id: string) => unknown): Promise<string> {
+  const auth = await resolveQuotaAuth(findProvider(id)!, registry, reader);
+  return auth.ok ? auth.apiKey : "";
+}
 
 const now = Date.UTC(2026, 9, 23, 12);
 const reset = now + 5 * 60 * 60 * 1000;
@@ -102,8 +107,8 @@ test("Copilot quota uses the stored GitHub OAuth token, NEVER the inference toke
   const registry = { getApiKeyForProvider: async () => { throw Error("must not request the inference token"); } };
   assert.equal(await quotaApiKey("github-copilot", registry, () => ({ type: "oauth", refresh: "synthetic-github-oauth", access: "synthetic-inference" })), "synthetic-github-oauth");
   for (const credential of [undefined, { type: "api_key", key: "synthetic-inference" }, { type: "oauth", access: "synthetic-inference" },
-    { type: "oauth", refresh: "synthetic-enterprise-token", enterpriseUrl: "example.ghe.com" },
-    { type: "oauth", refresh: "synthetic-enterprise-token", enterpriseUrl: "https://example.ghe.com" }]) {
+    { type: "oauth", refresh: "synthetic-enterprise-token", enterpriseUrl: "example.ghe.com.evil.invalid" },
+    { type: "oauth", refresh: "synthetic-enterprise-token", enterpriseUrl: "https://github.com@evil.invalid" }]) {
     assert.equal(await quotaApiKey("github-copilot", registry, () => credential), "");
   }
 });
